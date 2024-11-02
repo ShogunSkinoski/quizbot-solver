@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Quiz</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .quiz-container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .question {
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+
+        .options {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .option {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .option:hover {
+            background-color: #f0f0f0;
+        }
+
+        .option.selected {
+            background-color: #e3f2fd;
+        }
+
+        .option.correct {
+            background-color: #c8e6c9;
+        }
+
+        .option.incorrect {
+            background-color: #ffcdd2;
+        }
+
+        .controls {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            justify-content: space-between;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            background-color: #2196f3;
+            color: white;
+            font-weight: bold;
+        }
+
+        button:hover {
+            background-color: #1976d2;
+        }
+
+        button:disabled {
+            background-color: #bdbdbd;
+            cursor: not-allowed;
+        }
+
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            text-align: center;
+            font-weight: bold;
+        }
+
+        .import-container {
+            margin-bottom: 20px;
+            padding: 20px;
+            border: 2px dashed #2196f3;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        .progress {
+            height: 100%;
+            background-color: #2196f3;
+            transition: width 0.3s ease;
+        }
+
+        .score-display {
+            text-align: center;
+            font-size: 1.2em;
+            margin-bottom: 20px;
+        }
+
+        #debug-area {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="quiz-container">
+        <div class="import-container">
+            <h2>Import Questions</h2>
+            <input type="file" id="fileInput" accept=".xml,.txt,.html" />
+            <p>Upload a Moodle XML file or text file with questions</p>
+        </div>
+        
+        <div class="progress-bar">
+            <div class="progress" style="width: 0%"></div>
+        </div>
+        
+        <div class="score-display">
+            Score: <span id="score">0</span>/<span id="totalQuestions">0</span>
+        </div>
+        
+        <div id="questionContainer"></div>
+        
+        <div class="controls">
+            <button id="prevBtn" disabled>Previous</button>
+            <button id="checkBtn">Check Answer</button>
+            <button id="nextBtn" disabled>Next</button>
+        </div>
+        
+        <div id="result"></div>
+        <div id="debug-area"></div>
+    </div>
+
+    <script>
+        let questions = [];
+        let currentQuestionIndex = 0;
+        let score = 0;
+        let answeredQuestions = new Set();
+
+        const fileInput = document.getElementById('fileInput');
+        const questionContainer = document.getElementById('questionContainer');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+        const checkBtn = document.getElementById('checkBtn');
+        const resultDiv = document.getElementById('result');
+        const progressBar = document.querySelector('.progress');
+        const scoreDisplay = document.getElementById('score');
+        const totalQuestionsDisplay = document.getElementById('totalQuestions');
+        const debugArea = document.getElementById('debug-area');
+
+        fileInput.addEventListener('change', handleFileUpload);
+
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const content = e.target.result;
+                const fileExtension = file.name.split('.').pop().toLowerCase();
+
+                try {
+                    if (fileExtension === 'xml') {
+                        parseMoodleXML(content);
+                    } else {
+                        parseTextQuestions(content);
+                    }
+
+                    if (questions.length > 0) {
+                        initializeQuiz();
+                    }
+                } catch (error) {
+                    console.error('Error processing file:', error);
+                    debugArea.style.display = 'block';
+                    debugArea.textContent = 'Error processing file: ' + error.message;
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        function parseMoodleXML(xmlContent) {
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xmlContent, 'text/xml');
+            const questionElements = xmlDoc.getElementsByTagName('question');
+            questions = [];
+
+            for (let i = 0; i < questionElements.length; i++) {
+                const questionElement = questionElements[i];
+                if (questionElement.getAttribute('type') === 'multichoice') {
+                    const questionText = questionElement.querySelector('questiontext text').textContent;
+                    const answers = questionElement.getElementsByTagName('answer');
+                    const options = [];
+                    let correctAnswer = null;
+
+                    for (let j = 0; j < answers.length; j++) {
+                        const answer = answers[j];
+                        const optionText = answer.querySelector('text').textContent;
+                        options.push(optionText);
+                        
+                        if (answer.getAttribute('fraction') === '100') {
+                            correctAnswer = String.fromCharCode(97 + j); // Convert to a, b, c, d...
+                        }
+                    }
+
+                    if (options.length >= 2 && correctAnswer) {
+                        questions.push({
+                            question: questionText,
+                            options: options,
+                            correctAnswer: correctAnswer
+                        });
+                    }
+                }
+            }
+        }
+
+        function parseTextQuestions(content) {
+            questions = [];
+            let text = cleanText(content);
+
+            const sections = text.split('CEVAP ANAHTARI:');
+            const questionsSection = sections[0];
+            const answerSection = sections[1];
+
+            const questionBlocks = questionsSection.split(/(?=Soru\s+\d+\s*:)/g).filter(block => block.trim());
+
+            questionBlocks.forEach((block, index) => {
+                const questionNumberMatch = block.match(/Soru\s+(\d+)\s*:/);
+                if (!questionNumberMatch) return;
+
+                const cleanBlock = block.replace(/Soru\s+\d+\s*:/, '').trim();
+                const questionText = cleanBlock.split(/[A-Ea-e]\)/)[0].trim();
+                const optionsText = cleanBlock.substring(questionText.length).trim();
+                
+                const options = [];
+                const optionMatches = optionsText.match(/[A-Ea-e]\)(.*?)(?=[A-Ea-e]\)|$)/g);
+                
+                if (optionMatches) {
+                    optionMatches.forEach(match => {
+                        const option = match.replace(/^[A-Ea-e]\)/, '').trim();
+                        options.push(option);
+                    });
+                }
+
+                if (options.length >= 2) {
+                    questions.push({
+                        question: questionText,
+                        options: options,
+                        correctAnswer: null
+                    });
+                }
+            });
+
+            if (answerSection) {
+                const answerMatches = answerSection.match(/\d+\s*\.\s*[A-Ea-e]/g);
+                if (answerMatches) {
+                    answerMatches.forEach(match => {
+                        const [num, ans] = match.split('.');
+                        const questionIndex = parseInt(num.trim()) - 1;
+                        const answer = ans.trim().toLowerCase();
+                        
+                        if (questions[questionIndex]) {
+                            questions[questionIndex].correctAnswer = answer;
+                        }
+                    });
+                }
+            }
+        }
+
+        function cleanText(text) {
+            return text.replace(/\u00a0/g, ' ')
+                      .replace(/\r\n/g, '\n')
+                      .replace(/\n+/g, '\n')
+                      .trim();
+        }
+
+        function initializeQuiz() {
+            currentQuestionIndex = 0;
+            score = 0;
+            answeredQuestions.clear();
+            updateQuestion();
+            updateControls();
+            totalQuestionsDisplay.textContent = questions.length;
+            scoreDisplay.textContent = score;
+        }
+
+        function updateQuestion() {
+            if (!questions.length) return;
+
+            const question = questions[currentQuestionIndex];
+            const html = `
+                <div class="question">
+                    <h3>Question ${currentQuestionIndex + 1}</h3>
+                    <p>${question.question}</p>
+                    <div class="options">
+                        ${question.options.map((option, index) => `
+                            <div class="option" data-index="${index}">
+                                ${String.fromCharCode(97 + index)}) ${option}
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+
+            questionContainer.innerHTML = html;
+
+            document.querySelectorAll('.option').forEach(option => {
+                option.addEventListener('click', () => selectOption(option));
+            });
+
+            updateProgressBar();
+        }
+
+        function selectOption(selectedOption) {
+            document.querySelectorAll('.option').forEach(option => {
+                option.classList.remove('selected');
+            });
+            selectedOption.classList.add('selected');
+        }
+
+        function checkAnswer() {
+            const selectedOption = document.querySelector('.option.selected');
+            if (!selectedOption) {
+                alert('Please select an answer!');
+                return;
+            }
+
+            const question = questions[currentQuestionIndex];
+            const selectedAnswer = String.fromCharCode(97 + parseInt(selectedOption.dataset.index));
+            const isCorrect = selectedAnswer === question.correctAnswer;
+
+            if (!answeredQuestions.has(currentQuestionIndex)) {
+                if (isCorrect) {
+                    score++;
+                    scoreDisplay.textContent = score;
+                }
+                answeredQuestions.add(currentQuestionIndex);
+            }
+
+            document.querySelectorAll('.option').forEach(option => {
+                const optionIndex = parseInt(option.dataset.index);
+                const optionLetter = String.fromCharCode(97 + optionIndex);
+                
+                if (optionLetter === question.correctAnswer) {
+                    option.classList.add('correct');
+                } else if (option === selectedOption && !isCorrect) {
+                    option.classList.add('incorrect');
+                }
+            });
+
+            nextBtn.disabled = false;
+            checkBtn.disabled = true;
+            
+            updateProgressBar();
+        }
+
+        function updateControls() {
+            prevBtn.disabled = currentQuestionIndex === 0;
+            nextBtn.disabled = !answeredQuestions.has(currentQuestionIndex);
+            checkBtn.disabled = answeredQuestions.has(currentQuestionIndex);
+        }
+
+        function updateProgressBar() {
+            const progress = (answeredQuestions.size / questions.length) * 100;
+            progressBar.style.width = `${progress}%`;
+        }
+
+        prevBtn.addEventListener('click', () => {
+            if (currentQuestionIndex > 0) {
+                currentQuestionIndex--;
+                updateQuestion();
+                updateControls();
+            }
+        });
+
+        nextBtn.addEventListener('click', () => {
+            if (currentQuestionIndex < questions.length - 1) {
+                currentQuestionIndex++;
+                updateQuestion();
+                updateControls();
+            } else if (answeredQuestions.size === questions.length) {
+                showFinalResult();
+            }
+        });
+
+        checkBtn.addEventListener('click', checkAnswer);
+
+        function showFinalResult() {
+            const percentage = (score / questions.length) * 100;
+            resultDiv.innerHTML = `
+                <h2>Quiz Complete!</h2>
+                <p>Your final score: ${score}/${questions.length} (${percentage.toFixed(1)}%)</p>
+            `;
+            resultDiv.style.backgroundColor = percentage >= 70 ? '#c8e6c9' : '#ffcdd2';
+        }
+    </script>
+</body>
+</html>
